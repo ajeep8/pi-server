@@ -8,6 +8,8 @@ import { errorMiddleware } from "./middleware/error.js";
 import { healthRoutes } from "./routes/health.js";
 import { modelsRoutes } from "./routes/models.js";
 import { createChatRoutes } from "./routes/chat.js";
+import { createFilesRoutes } from "./routes/files.js";
+import { loadAdapter } from "./adapters/index.js";
 
 export interface AppContext {
   app: Hono;
@@ -19,6 +21,7 @@ export function createApp(config: Config): AppContext {
   const app = new Hono();
   const processManager = new ProcessManager(config);
   const sessionManager = new SessionManager(processManager);
+  const adapter = loadAdapter(config.adapter);
 
   app.use("*", cors());
   app.use("*", errorMiddleware);
@@ -26,7 +29,8 @@ export function createApp(config: Config): AppContext {
 
   app.route("/", healthRoutes);
   app.route("/", modelsRoutes);
-  app.route("/", createChatRoutes(sessionManager));
+  app.route("/", createChatRoutes(sessionManager, adapter));
+  app.route("/", createFilesRoutes(sessionManager, { uploadDir: config.uploadDir, ingestTimeoutMs: config.ingestTimeoutMs }));
 
   // Session management endpoints
   app.get("/v1/sessions", (c) => {

@@ -1,16 +1,19 @@
 import { randomUUID } from "node:crypto";
 import type { AgentEvent, ExtensionUIRequest } from "../rpc/protocol.js";
 import type { ChatCompletionChunk, ChatCompletionChunkChoice } from "./types.js";
+import type { Adapter } from "../adapters/types.js";
 
 export class StreamFormatter {
   private requestId: string;
   private model: string;
   private created: number;
+  private adapter: Adapter;
 
-  constructor(model: string) {
+  constructor(model: string, adapter: Adapter) {
     this.requestId = `chatcmpl-${randomUUID()}`;
     this.model = model;
     this.created = Math.floor(Date.now() / 1000);
+    this.adapter = adapter;
   }
 
   formatEvent(event: AgentEvent): string | null {
@@ -35,7 +38,14 @@ export class StreamFormatter {
   }
 
   formatUIRequest(request: ExtensionUIRequest): string {
-    const toolCall = extensionUIToToolCall(request);
+    const output = this.adapter(request);
+
+    if (output.type === "content") {
+      const contentChunk = this.formatChunk({ content: output.content }, null);
+      const finishChunk = this.formatChunk({}, output.finishReason);
+      return contentChunk + finishChunk;
+    }
+
     const chunk: ChatCompletionChunk = {
       id: this.requestId,
       object: "chat.completion.chunk",
@@ -45,11 +55,11 @@ export class StreamFormatter {
         {
           index: 0,
           delta: {
-            tool_calls: [{
-              id: toolCall.id,
-              type: "function",
-              function: toolCall.function,
-            }],
+            tool_calls: output.toolCalls?.map((tc) => ({
+              id: tc.id,
+              type: tc.type,
+              function: tc.function,
+            })),
           },
           finish_reason: null,
         },
@@ -62,9 +72,38 @@ export class StreamFormatter {
       object: "chat.completion.chunk",
       created: this.created,
       model: this.model,
-      choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+      choices: [{ index: 0, delta: {}, finish_reason: output.finishReason }],
     };
     return deltaChunk + `data: ${JSON.stringify(finishChunk)}\n\n`;
+  }
+
+  formatFireForget(request: ExtensionUIRequest): string {
+    const output = this.adapter(request);
+
+    if (output.type === "content") {
+      return this.formatChunk({ content: output.content }, null);
+    }
+
+    const chunk: ChatCompletionChunk = {
+      id: this.requestId,
+      object: "chat.completion.chunk",
+      created: this.created,
+      model: this.model,
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: output.toolCalls?.map((tc) => ({
+              id: tc.id,
+              type: tc.type,
+              function: tc.function,
+            })),
+          },
+          finish_reason: null,
+        },
+      ],
+    };
+    return `data: ${JSON.stringify(chunk)}\n\n`;
   }
 
   formatDone(): string {
@@ -88,19 +127,4 @@ export class StreamFormatter {
   getRequestId(): string {
     return this.requestId;
   }
-}
-
-export function extensionUIToToolCall(request: ExtensionUIRequest): {
-  id: string;
-  type: "function";
-  function: { name: string; arguments: string };
-} {
-  return {
-    id: request.id,
-    type: "function",
-    function: {
-      name: `extension_ui_${request.method}`,
-      arguments: JSON.stringify(request.params ?? {}),
-    },
-  };
 }

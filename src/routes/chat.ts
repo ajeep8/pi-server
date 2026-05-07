@@ -7,8 +7,9 @@ import { ResponseBuilder } from "../openai/response-builder.js";
 import type { ChatCompletionRequest, OpenAIMessage } from "../openai/types.js";
 import type { AgentEvent, ExtensionUIRequest, RpcResponse } from "../rpc/protocol.js";
 import type { RpcBridge } from "../rpc/rpc-bridge.js";
+import type { Adapter } from "../adapters/types.js";
 
-export function createChatRoutes(sessionManager: SessionManager): Hono {
+export function createChatRoutes(sessionManager: SessionManager, adapter: Adapter): Hono {
   const app = new Hono();
 
   app.post("/v1/chat/completions", async (c) => {
@@ -29,7 +30,7 @@ export function createChatRoutes(sessionManager: SessionManager): Hono {
     // Check if this is a tool result for a pending UI request
     const toolResultMessage = findToolResultMessage(body.messages);
     if (toolResultMessage && bridge.waitingUI) {
-      return handleUIResponse(c, bridge, toolResultMessage, resolvedSessionId, body);
+      return handleUIResponse(c, bridge, toolResultMessage, resolvedSessionId, body, adapter);
     }
 
     if (bridge.busy || bridge.waitingUI) {
@@ -57,10 +58,10 @@ export function createChatRoutes(sessionManager: SessionManager): Hono {
     const model = body.model ?? "pi-agent";
 
     if (body.stream) {
-      return handleStreaming(c, bridge, promptText, images, model, resolvedSessionId);
+      return handleStreaming(c, bridge, promptText, images, model, resolvedSessionId, adapter);
     }
 
-    return handleNonStreaming(c, bridge, promptText, images, model, resolvedSessionId);
+    return handleNonStreaming(c, bridge, promptText, images, model, resolvedSessionId, adapter);
   });
 
   return app;
@@ -81,6 +82,7 @@ async function handleUIResponse(
   toolResult: OpenAIMessage,
   sessionId: string,
   body: ChatCompletionRequest,
+  adapter: Adapter,
 ) {
   const uiRequestId = toolResult.tool_call_id!;
   const resultContent = typeof toolResult.content === "string" ? toolResult.content : "";
@@ -91,7 +93,7 @@ async function handleUIResponse(
 
   if (body.stream) {
     return streamSSE(c, async (stream) => {
-      const formatter = new StreamFormatter(model);
+      const formatter = new StreamFormatter(model, adapter);
 
       const { cleanup, promise } = waitForCompletionOrUI(bridge, {
         onEvent(event) {
@@ -109,6 +111,14 @@ async function handleUIResponse(
             stream.writeSSE({ data: jsonStr }).catch(() => {});
           }
         },
+        onFireForget(request) {
+          const formatted = formatter.formatFireForget(request);
+          const parts = formatted.split("\n\n").filter(Boolean);
+          for (const part of parts) {
+            const jsonStr = part.replace(/^data: /, "");
+            stream.writeSSE({ data: jsonStr }).catch(() => {});
+          }
+        },
       });
 
       await promise;
@@ -118,10 +128,11 @@ async function handleUIResponse(
   }
 
   // Non-streaming
-  const builder = new ResponseBuilder(model);
+  const builder = new ResponseBuilder(model, adapter);
   const { cleanup, promise } = waitForCompletionOrUI(bridge, {
     onEvent(event) { builder.processEvent(event); },
     onUIRequest(request) { builder.setUIRequest(request); },
+    onFireForget(request) { builder.processFireForget(request); },
   });
 
   await promise;
@@ -137,9 +148,10 @@ function handleStreaming(
   images: Array<{ type: "image"; data: string; mimeType: string }> | undefined,
   model: string,
   sessionId: string,
+  adapter: Adapter,
 ) {
   return streamSSE(c, async (stream) => {
-    const formatter = new StreamFormatter(model);
+    const formatter = new StreamFormatter(model, adapter);
 
     const responsePromise = new Promise<void>((resolve) => {
       const onResponse = (resp: RpcResponse) => {
@@ -167,6 +179,14 @@ function handleStreaming(
           stream.writeSSE({ data: jsonStr }).catch(() => {});
         }
       },
+      onFireForget(request) {
+        const formatted = formatter.formatUIRequest(request);
+        const parts = formatted.split("\n\n").filter(Boolean);
+        for (const part of parts) {
+          const jsonStr = part.replace(/^data: /, "");
+          stream.writeSSE({ data: jsonStr }).catch(() => {});
+        }
+      },
     });
 
     bridge.sendPrompt(promptText, images);
@@ -184,12 +204,14 @@ async function handleNonStreaming(
   images: Array<{ type: "image"; data: string; mimeType: string }> | undefined,
   model: string,
   sessionId: string,
+  adapter: Adapter,
 ) {
-  const builder = new ResponseBuilder(model);
+  const builder = new ResponseBuilder(model, adapter);
 
   const { cleanup, promise } = waitForCompletionOrUI(bridge, {
     onEvent(event) { builder.processEvent(event); },
     onUIRequest(request) { builder.setUIRequest(request); },
+    onFireForget(request) { builder.processFireForget(request); },
   });
 
   bridge.sendPrompt(promptText, images);
@@ -205,10 +227,12 @@ function waitForCompletionOrUI(
   handlers: {
     onEvent: (event: AgentEvent) => void;
     onUIRequest: (request: ExtensionUIRequest) => void;
+    onFireForget?: (request: ExtensionUIRequest) => void;
   },
 ): { cleanup: () => void; promise: Promise<void> } {
   let onEvent: (event: AgentEvent) => void;
   let onUIRequest: (request: ExtensionUIRequest) => void;
+  let onFireForget: ((request: ExtensionUIRequest) => void) | undefined;
   let timeout: ReturnType<typeof setTimeout>;
 
   const promise = new Promise<void>((resolve, reject) => {
@@ -230,14 +254,22 @@ function waitForCompletionOrUI(
       resolve();
     };
 
+    onFireForget = handlers.onFireForget;
+
     bridge.on("event", onEvent);
     bridge.on("extension_ui_request", onUIRequest);
+    if (onFireForget) {
+      bridge.on("extension_ui_fire_forget", onFireForget);
+    }
   });
 
   const cleanup = () => {
     clearTimeout(timeout!);
     bridge.removeListener("event", onEvent!);
     bridge.removeListener("extension_ui_request", onUIRequest!);
+    if (onFireForget) {
+      bridge.removeListener("extension_ui_fire_forget", onFireForget);
+    }
   };
 
   return { cleanup, promise };

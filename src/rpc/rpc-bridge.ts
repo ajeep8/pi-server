@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { RpcCommandEnvelope, RpcResponse, AgentEvent, ExtensionUIRequest, ExtensionUIResponse, RpcLine } from "./protocol.js";
+import { FIRE_AND_FORGET_METHODS, CUSTOM_WIDGET_KEYS } from "./protocol.js";
 
 export type BridgeState = "idle" | "busy" | "waiting_ui";
 
@@ -109,9 +110,18 @@ export class RpcBridge extends EventEmitter {
         this.emit("response", parsed as RpcResponse);
       } else if (parsed.type === "extension_ui_request") {
         const uiRequest = parsed as ExtensionUIRequest;
-        this._pendingUIRequest = uiRequest;
-        this._state = "waiting_ui";
-        this.emit("extension_ui_request", uiRequest);
+        const isCustomWidget = uiRequest.method === "setWidget" && CUSTOM_WIDGET_KEYS.has(uiRequest.widgetKey as string);
+
+        if (isCustomWidget) {
+          console.log(`[pi-server] Custom widget: ${uiRequest.widgetKey}`);
+          this.emit("extension_ui_request", uiRequest);
+        } else if (FIRE_AND_FORGET_METHODS.has(uiRequest.method)) {
+          this.emit("extension_ui_fire_forget", uiRequest);
+        } else {
+          this._pendingUIRequest = uiRequest;
+          this._state = "waiting_ui";
+          this.emit("extension_ui_request", uiRequest);
+        }
       } else {
         const event = parsed as AgentEvent;
         if (event.type === "agent_end") {

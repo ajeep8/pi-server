@@ -1,6 +1,6 @@
 {
   "name": "pi-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenAI-compatible API server for pi-coding-agent based applications",
   "type": "module",
   "bin": {

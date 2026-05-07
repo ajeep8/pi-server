@@ -125,7 +125,12 @@ export interface ExtensionUIRequest {
   id: string;
   method: string;
   params: unknown;
+  [key: string]: unknown;
 }
+
+export const FIRE_AND_FORGET_METHODS = new Set(["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"]);
+
+export const CUSTOM_WIDGET_KEYS = new Set(["push_file", "structured_content"]);
 
 export interface ExtensionUIResponse {
   type: "extension_ui_response";

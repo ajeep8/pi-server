@@ -32,6 +32,9 @@ All configuration is via environment variables.
 | `MAX_SESSIONS` | No | `100` | Max concurrent agent processes |
 | `CLEANUP_INTERVAL_MS` | No | `60000` | How often to evict expired sessions (ms) |
 | `PI_MODEL_NAME` | No | `pi-agent` | Model name returned by `/v1/models` |
+| `ADAPTER` | No | `toolcall` | Adapter for non-chat messages: `toolcall` or `structured-json` |
+| `UPLOAD_DIR` | No | `./uploads` | Directory for uploaded files |
+| `INGEST_TIMEOUT_MS` | No | `300000` | Timeout for file ingestion by agent (ms) |
 
 ## Running
 
@@ -52,6 +55,7 @@ PI_AGENT_BINARY=/path/to/your/cli.ts npm run dev
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/v1/chat/completions` | Chat completions (streaming + non-streaming) |
+| `POST` | `/v1/files` | Upload a file for agent ingestion |
 | `GET` | `/v1/models` | List available models |
 | `GET` | `/v1/sessions` | List active sessions |
 | `DELETE` | `/v1/sessions/:id` | Destroy a session |
@@ -200,6 +204,73 @@ curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "mnemosyne", "messages": [{"role": "user", "content": "hello"}]}'
 ```
+
+### File upload
+
+Upload a file for the agent to ingest. Creates a new session, saves the file locally, and prompts the agent to process it.
+
+```bash
+curl http://localhost:8000/v1/files \
+  -F "file=@/path/to/document.pdf"
+```
+
+Response:
+
+```json
+{
+  "id": "file-abc123",
+  "object": "file",
+  "filename": "document.pdf",
+  "bytes": 102400,
+  "purpose": "assistants",
+  "session_id": "upload_uuid",
+  "path": "./uploads/upload_uuid/document.pdf"
+}
+```
+
+The agent receives a prompt `"Ingest the file at: <path>"` and must complete processing before the endpoint returns. Returns 500 if ingestion fails or times out.
+
+## Adapters
+
+Pi-server uses an adapter system to translate non-chat messages from the agent (interactive prompts, file pushes, structured content) into the format expected by the downstream client.
+
+### Available adapters
+
+| Adapter | Output format | Use case |
+|---|---|---|
+| `toolcall` (default) | OpenAI `tool_calls` | Downstream handles interactive messages via standard tool_call/tool_result flow |
+| `structured-json` | Stringified JSON in `content` | Downstream expects structured JSON with `kind`, `clarifyingQuestions`, `artifactCandidate`, etc. |
+
+Set `ADAPTER=structured-json` in `.env` to use the structured JSON adapter.
+
+### How it works
+
+The agent emits `extension_ui_request` events for interactive messages. Pi-server routes these through the configured adapter:
+
+- **Dialog methods** (`select`, `confirm`, `input`, `editor`) — the agent blocks until the client responds. With the `toolcall` adapter, these become `tool_calls` that the client answers via a tool result message.
+- **Fire-and-forget methods** (`notify`, `setWidget`, `setStatus`, `setTitle`) — the agent continues immediately. These are streamed inline to the client via the adapter.
+
+Custom widget keys `push_file` and `structured_content` are recognized as special fire-and-forget events (emitted by agent tools) and routed through the adapter alongside regular messages.
+
+### Writing a custom adapter
+
+Create a file in `src/adapters/` that exports a function matching the `Adapter` type:
+
+```typescript
+import type { ExtensionUIRequest } from "../rpc/protocol.js";
+import type { AdapterOutput } from "./types.js";
+
+export function myAdapter(request: ExtensionUIRequest): AdapterOutput {
+  return {
+    type: "content",          // or "tool_calls"
+    content: "...",           // for type: "content"
+    toolCalls: [...],         // for type: "tool_calls"
+    finishReason: "stop",     // or "tool_calls"
+  };
+}
+```
+
+Register it in `src/adapters/index.ts` and set `ADAPTER=my-adapter` in `.env`.
 
 ## Debugging
 

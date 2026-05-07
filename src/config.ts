@@ -7,6 +7,9 @@ export interface Config {
   sessionTtlMs: number;
   maxSessions: number;
   cleanupIntervalMs: number;
+  adapter: string;
+  uploadDir: string;
+  ingestTimeoutMs: number;
 }
 
 function required(name: string): string {
@@ -27,5 +30,8 @@ export function loadConfig(): Config {
     sessionTtlMs: parseInt(process.env.SESSION_TTL_MS ?? "1800000", 10),
     maxSessions: parseInt(process.env.MAX_SESSIONS ?? "100", 10),
     cleanupIntervalMs: parseInt(process.env.CLEANUP_INTERVAL_MS ?? "60000", 10),
+    adapter: process.env.ADAPTER ?? "toolcall",
+    uploadDir: process.env.UPLOAD_DIR ?? "./uploads",
+    ingestTimeoutMs: parseInt(process.env.INGEST_TIMEOUT_MS ?? "300000", 10),
   };
 }
