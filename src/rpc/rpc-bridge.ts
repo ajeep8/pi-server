@@ -107,9 +107,11 @@ export class RpcBridge extends EventEmitter {
       }
 
       if (parsed.type === "response") {
+        logRpc("response", parsed);
         this.emit("response", parsed as RpcResponse);
       } else if (parsed.type === "extension_ui_request") {
         const uiRequest = parsed as ExtensionUIRequest;
+        logRpc("extension_ui_request", uiRequest);
         const isCustomWidget = uiRequest.method === "setWidget" && CUSTOM_WIDGET_KEYS.has(uiRequest.widgetKey as string);
 
         if (isCustomWidget) {
@@ -124,6 +126,7 @@ export class RpcBridge extends EventEmitter {
         }
       } else {
         const event = parsed as AgentEvent;
+        logAgentEvent(event);
         if (event.type === "agent_end") {
           this._state = "idle";
           this._pendingUIRequest = null;
@@ -137,6 +140,7 @@ export class RpcBridge extends EventEmitter {
     if (this._pendingUIRequest?.id !== id) {
       throw new Error(`No pending UI request with id: ${id}`);
     }
+    logRpc("extension_ui_response", { id, result, cancelled });
     const response: ExtensionUIResponse = { type: "extension_ui_response", id };
     if (cancelled) {
       response.cancelled = true;
@@ -154,6 +158,7 @@ export class RpcBridge extends EventEmitter {
     }
     const id = command.id ?? `cmd_${++this.commandCounter}`;
     const envelope = { ...command, id };
+    logRpc("command", envelope);
     this.process.stdin.write(JSON.stringify(envelope) + "\n");
     return id;
   }
@@ -226,4 +231,74 @@ export class RpcBridge extends EventEmitter {
     }
     this.removeAllListeners();
   }
+}
+
+function loggingEnabled(): boolean {
+  return process.env.PI_SERVER_LOG_RPC !== "0" && process.env.PI_SERVER_LOG_RPC !== "false";
+}
+
+function stringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function truncate(text: string, max = 2000): string {
+  return text.length > max ? `${text.slice(0, max)}...<truncated ${text.length - max} chars>` : text;
+}
+
+function logRpc(label: string, value: unknown): void {
+  if (!loggingEnabled()) return;
+  console.log(`[pi-rpc ${label}] ${truncate(stringify(value))}`);
+}
+
+function logAgentEvent(event: AgentEvent): void {
+  if (!loggingEnabled()) return;
+
+  if (event.type === "message_update" && "assistantMessageEvent" in event) {
+    const update = event.assistantMessageEvent;
+
+    // Do not log token-by-token deltas; they are too noisy in journald.
+    // Log the aggregated text/thinking block when pi emits *_end instead.
+    if (update.type === "text_delta" || update.type === "thinking_delta" || update.type === "toolcall_delta") {
+      return;
+    }
+    if (update.type === "text_end") {
+      console.log(`[pi-agent text] ${truncate(update.content)}`);
+      return;
+    }
+    if (update.type === "thinking_end") {
+      console.log(`[pi-agent thinking] ${truncate(update.content)}`);
+      return;
+    }
+    if (update.type === "toolcall_end") {
+      console.log(`[pi-agent toolcall] ${update.toolCall.name} ${truncate(stringify(update.toolCall.arguments))}`);
+      return;
+    }
+    if (update.type === "text_start" || update.type === "thinking_start" || update.type === "toolcall_start") {
+      console.log(`[pi-agent message_update] ${update.type}`);
+      return;
+    }
+    console.log(`[pi-agent message_update] ${update.type}`);
+    return;
+  }
+
+  if (event.type === "tool_execution_start") {
+    console.log(`[pi-agent tool_start] ${event.toolName} ${truncate(stringify(event.args))}`);
+    return;
+  }
+
+  if (event.type === "tool_execution_update") {
+    console.log(`[pi-agent tool_update] ${event.toolName} ${truncate(stringify(event.partialResult))}`);
+    return;
+  }
+
+  if (event.type === "tool_execution_end") {
+    console.log(`[pi-agent tool_end] ${event.toolName} isError=${event.isError} result=${truncate(stringify(event.result))}`);
+    return;
+  }
+
+  console.log(`[pi-agent event] ${event.type}`);
 }

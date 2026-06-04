@@ -238,7 +238,7 @@ function waitForCompletionOrUI(
   const promise = new Promise<void>((resolve, reject) => {
     timeout = setTimeout(() => {
       reject(new Error("Request timed out"));
-    }, 300000);
+    }, getRequestTimeoutMs());
 
     onEvent = (event: AgentEvent) => {
       handlers.onEvent(event);
@@ -273,4 +273,11 @@ function waitForCompletionOrUI(
   };
 
   return { cleanup, promise };
+}
+
+function getRequestTimeoutMs(): number {
+  const raw = process.env.REQUEST_TIMEOUT_MS;
+  if (!raw) return 1800000; // 30 minutes
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1800000;
 }
