@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 User=claw01
 Group=claw01
-WorkingDirectory=/home/claw01/git/pi-server
+WorkingDirectory=/home/claw01/mygit/pi-server
 Environment=NODE_ENV=production
 Environment=PATH=/home/claw01/.nvm/versions/node/v22.22.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/home/claw01/.nvm/versions/node/v22.22.1/bin/npm start

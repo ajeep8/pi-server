@@ -46,7 +46,8 @@ if [[ $# -eq 1 ]]; then
   fi
   CONTENT="$(cat "$CONTENT_FILE")"
 else
-  CONTENT="你好，简单介绍一下你自己"
+  usage >&2
+  exit 2
 fi
 
 python3 - "$MODEL" "$SYSTEM_PROMPT" "$CONTENT" <<'PY' | curl -sS "${BASE_URL}/chat/completions" \
